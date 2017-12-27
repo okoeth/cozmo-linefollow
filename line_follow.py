@@ -114,49 +114,40 @@ def move_left(robot: cozmo.robot.Robot, move):
 	robot.turn_in_place(degrees(-45)).wait_for_completed()
 
 
-def correct_position(robot: cozmo.robot.Robot, prv_center, cur_center):
+def correct_position(robot: cozmo.robot.Robot, cur_center):
 	""" Corrects the position of the robot. Currently, the following corrections
 		are implemented (see top of file for constant definitions):
 		1) Current path center is >gap_s / >gap_m / >gap_l pixels to the right, 
 		   this requires a turn_s / turn_m / turn_l to the left (positive degree)
 		2) Current path center is >gap_s / >gap_m / >gap_l pixels to the left, 
 		   this requires a turn_s / turn_m / turn_l to the right (positive degree)
-		3) Current path center deviates less than gap_s, but path center is
-		   gap_s / gap_m / gap_l right from the camera center,
-		   this requires move_s / move_m / move_l to the left
-		4) Current path center deviates less than gap_s, but path center is
-		   gap_s / gap_m / gap_l left from the camera center,
-		   this requires move_s / move_m / move_l to the right
 	"""
 	log.info('Correcting position...')
-	gap_rel = prv_center - cur_center
 	gap_abs = cam_center - cur_center
-	log.info('Previous center : '+str(prv_center))
 	log.info('Current center  : '+str(cur_center))
-	log.info('Relative gap    : '+str(gap_rel))
 	log.info('Absolute gap    : '+str(gap_abs))
 	if gap_abs < -gap_l:
-		log.info('Current center is gap_l to right, needs right turn')
+		log.info('Current center is gap_l to right, needs right turn_l')
 		robot.turn_in_place(degrees(-turn_l)).wait_for_completed()
 		return 10
 	elif gap_abs < -gap_m:
-		log.info('Current center is gap_m to right, needs left move_m')
+		log.info('Current center is gap_m to right, needs right turn_m')
 		robot.turn_in_place(degrees(-turn_m)).wait_for_completed()
 		return 20
 	elif gap_abs < -gap_s:
-		log.info('Current center is gap_s to right, needs left move_s')
+		log.info('Current center is gap_s to right, needs right turn_s')
 		robot.turn_in_place(degrees(-turn_s)).wait_for_completed()
 		return 30
 	elif gap_abs > gap_l:
-		log.info('Current center is gap_l to left, needs right move_l')
+		log.info('Current center is gap_l to left, needs left turn_l')
 		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
 		return 10
 	elif gap_abs > gap_m:
-		log.info('Current center is gap_m to left, needs right move_m')
+		log.info('Current center is gap_m to left, needs left turn_m')
 		robot.turn_in_place(degrees(turn_m)).wait_for_completed()
 		return 20
 	elif gap_abs > gap_s:
-		log.info('Current center is gap_s to left, needs right move_s')
+		log.info('Current center is gap_s to left, needs left turn_s')
 		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
 		return 30
 	else:
@@ -179,7 +170,7 @@ def step_forward(robot: cozmo.robot.Robot):
 	pth_img = draw_path_rect(pth_img, cur_x, cur_y+2, cur_w, cur_h, (0,255,0))
 	cv2.imshow('step_forward', pth_img)
 	# Trigger correction
-	proposed_step = correct_position(robot, 0, get_path_center(cur_x, cur_w))
+	proposed_step = correct_position(robot, get_path_center(cur_x, cur_w))
 	log.info('Moving forward '+str(proposed_step)+'mm')
 	robot.drive_straight(distance_mm(proposed_step), speed_mmps(10)).wait_for_completed()
 
