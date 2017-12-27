@@ -31,16 +31,17 @@ btm_zn_w = 260
 btm_zn_h = 20
 
 # Constants for corrections
-gap_s = 3
-gap_m = 6
-gap_l = 12
-turn_s = 10
-turn_m = 20
-turn_l = 30
+gap_s = 20
+gap_m = 60
+gap_l = 120
+turn_s = 5
+turn_m = 15
+turn_l = 45
 move_s = 5
 move_m = 10
 move_l = 15
 cam_center = 160
+step_l = 20
 
 def get_path_rect(img):
 	""" Finds the bounding rect of the contour of the path. For this
@@ -134,42 +135,32 @@ def correct_position(robot: cozmo.robot.Robot, prv_center, cur_center):
 	log.info('Current center  : '+str(cur_center))
 	log.info('Relative gap    : '+str(gap_rel))
 	log.info('Absolute gap    : '+str(gap_abs))
-	if gap_rel < -gap_l:
-		log.info('Current center is gap_l to right, needs left turn_l')
-		robot.turn_in_place(degrees(turn_l)).wait_for_completed()
-	elif gap_rel < -gap_m:
-		log.info('Current center is gap_m to right, needs left turn_m')
-		robot.turn_in_place(degrees(turn_m)).wait_for_completed()
-	elif gap_rel < -gap_s:
-		log.info('Current center is gap_s to right, needs left turn_s')
-		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
-	elif gap_rel > gap_l:
-		log.info('Current center is gap_l to left, needs right turn_l')
+	if gap_abs < -gap_l:
+		log.info('Current center is gap_l to right, needs right turn')
 		robot.turn_in_place(degrees(-turn_l)).wait_for_completed()
-	elif gap_rel > gap_m:
-		log.info('Current center is gap_m to left, needs right turn_m')
-		robot.turn_in_place(degrees(-turn_m)).wait_for_completed()
-	elif gap_rel > gap_s:
-		log.info('Current center is gap_s to left, needs right turn_s')
-		robot.turn_in_place(degrees(-turn_s)).wait_for_completed()
-	elif gap_abs < -gap_l:
-		log.info('Current center is gap_l to right, needs left move_l')
-		move_left(robot, move_l)
+		return 10
 	elif gap_abs < -gap_m:
 		log.info('Current center is gap_m to right, needs left move_m')
-		move_left(robot, move_m)
+		robot.turn_in_place(degrees(-turn_m)).wait_for_completed()
+		return 20
 	elif gap_abs < -gap_s:
 		log.info('Current center is gap_s to right, needs left move_s')
-		move_left(robot, move_s)
+		robot.turn_in_place(degrees(-turn_s)).wait_for_completed()
+		return 30
 	elif gap_abs > gap_l:
 		log.info('Current center is gap_l to left, needs right move_l')
-		move_right(robot, move_l)
+		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
+		return 10
 	elif gap_abs > gap_m:
 		log.info('Current center is gap_m to left, needs right move_m')
-		move_right(robot, move_m)
+		robot.turn_in_place(degrees(turn_m)).wait_for_completed()
+		return 20
 	elif gap_abs > gap_s:
 		log.info('Current center is gap_s to left, needs right move_s')
-		move_right(robot, move_s)
+		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
+		return 30
+	else:
+		return 30
 
 
 def step_forward(robot: cozmo.robot.Robot):
@@ -182,20 +173,15 @@ def step_forward(robot: cozmo.robot.Robot):
 	# Take snapshot and store path rect
 	robot.set_head_angle(cozmo.robot.MIN_HEAD_ANGLE).wait_for_completed()
 	raw_img = np.array(robot.world.latest_image.raw_image)
-	prv_x, prv_y, prv_w, prv_h = get_path_rect(raw_img)
-	# Step forward
-	robot.drive_straight(distance_mm(10), speed_mmps(5)).wait_for_completed()
-	# Take another snapshot and store path rect
-	robot.set_head_angle(cozmo.robot.MIN_HEAD_ANGLE).wait_for_completed()
-	raw_img = np.array(robot.world.latest_image.raw_image)
 	cur_x, cur_y, cur_w, cur_h = get_path_rect(raw_img)
 	# Visualise path rects in second image
 	pth_img = draw_grid(raw_img)
-	pth_img = draw_path_rect(pth_img, prv_x, prv_y, prv_w, prv_h, (0,0,255))
 	pth_img = draw_path_rect(pth_img, cur_x, cur_y+2, cur_w, cur_h, (0,255,0))
 	cv2.imshow('step_forward', pth_img)
 	# Trigger correction
-	correct_position(robot, get_path_center(prv_x, prv_w), get_path_center(cur_x, cur_w))
+	proposed_step = correct_position(robot, 0, get_path_center(cur_x, cur_w))
+	log.info('Moving forward '+str(proposed_step)+'mm')
+	robot.drive_straight(distance_mm(proposed_step), speed_mmps(10)).wait_for_completed()
 
 
 def capture(robot: cozmo.robot.Robot):
