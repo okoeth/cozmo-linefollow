@@ -1,8 +1,12 @@
+import asyncio
 import cozmo
 import cv2
+import getopt
 import logging
 import numpy as np
 import sys
+import threading
+import time
 
 from cozmo.util import degrees, distance_mm, speed_mmps
 from matplotlib import pyplot as plt
@@ -14,10 +18,13 @@ from matplotlib import pyplot as plt
 	used for line position analysis.
 
 	Potential improvements:
-	(1) In case of multiple contours, select best contour 
+	(1) Crive continously and only stop for correction of
+		direction
+	(2) In case of multiple contours, select best contour 
 	    (heuristics could be: in the middle, nearest the last
 		contour, ...)
-	(2) 
+	(3) Master sharp turns
+	(4) Master crossings
 
 	Further work: Would be interesting to replace this complex
 	logic by just a neural network as done here:
@@ -43,6 +50,12 @@ move_l = 15
 cam_center = 160
 step_l = 20
 
+# Show/hide images
+show_img=True
+
+# Logger
+log = logging.getLogger('ok.linefollow')
+
 def get_path_rect(img):
 	""" Finds the bounding rect of the contour of the path. For this
 		image is denoised and converted in black and white and inverted.
@@ -62,10 +75,11 @@ def get_path_rect(img):
 		log.warning('No contour found')
 		return 0, 0, 0, 0
 	if len(cnts)>1:
-		log.warning('More than one contour found: ', len(cnts))
-		wrn_img = cv2.cvtColor(inv_img, cv2.COLOR_GRAY2RGB)
-		wrn_img = cv2.drawContours(wrn_img, cnts, -1, (0,255,0), 3)
-		cv2.imshow('contour_warning', wrn_img)
+		log.warning('More than one contour found: '+str(len(cnts)))
+		if show_img:
+			wrn_img = cv2.cvtColor(inv_img, cv2.COLOR_GRAY2RGB)
+			wrn_img = cv2.drawContours(wrn_img, cnts, -1, (0,255,0), 3)
+			cv2.imshow('contour_warning', wrn_img)
 	# Find bound rect of path
 	x,y,w,h = cv2.boundingRect(cnts[0])
 	return x+btm_zn_x,y+btm_zn_y,w,h
@@ -151,7 +165,7 @@ def correct_position(robot: cozmo.robot.Robot, cur_center):
 		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
 		return 30
 	else:
-		return 30
+		return 40
 
 
 def step_forward(robot: cozmo.robot.Robot):
@@ -162,17 +176,20 @@ def step_forward(robot: cozmo.robot.Robot):
 	"""
 	log.info('Stepping forward...')
 	# Take snapshot and store path rect
+	log.info('BEGIN_CALC')
 	robot.set_head_angle(cozmo.robot.MIN_HEAD_ANGLE).wait_for_completed()
 	raw_img = np.array(robot.world.latest_image.raw_image)
 	cur_x, cur_y, cur_w, cur_h = get_path_rect(raw_img)
 	# Visualise path rects in second image
 	pth_img = draw_grid(raw_img)
 	pth_img = draw_path_rect(pth_img, cur_x, cur_y+2, cur_w, cur_h, (0,255,0))
-	cv2.imshow('step_forward', pth_img)
+	if show_img:
+		cv2.imshow('step_forward', pth_img)
 	# Trigger correction
+	log.info('END_CALC')
 	proposed_step = correct_position(robot, get_path_center(cur_x, cur_w))
 	log.info('Moving forward '+str(proposed_step)+'mm')
-	robot.drive_straight(distance_mm(proposed_step), speed_mmps(10)).wait_for_completed()
+	robot.drive_straight(distance_mm(proposed_step), speed_mmps(20), False).wait_for_completed()
 
 
 def capture(robot: cozmo.robot.Robot):
@@ -185,7 +202,8 @@ def capture(robot: cozmo.robot.Robot):
 	x, y, w, h = get_path_rect(raw_img)
 	pth_img = cv2.rectangle(raw_img, (x,y), (x+w,y+h), (255,0,0) ,2)
 	cv2.imshow('capture', pth_img)
-	
+
+
 def battery_level(robot: cozmo.robot.Robot):
 	""" Logs the battery level
 	"""
@@ -196,40 +214,79 @@ def battery_level(robot: cozmo.robot.Robot):
 		log.warning('Level is low. Please place Cozmo on charger.')
 
 
-def cozmo_program(robot: cozmo.robot.Robot):
+def cozmo_cli(robot: cozmo.robot.Robot):
 	""" Main loop implementing simplistic CLI
 	"""
 	log.info('Entering Cozmo program')
 	robot.set_head_light(True)
 	robot.camera.image_stream_enabled = True
 	robot.set_lift_height(1.0).wait_for_completed()
-	print('Commands: (s)tep forward, (c)apture, (r)ight move, (l)eft move, (b)attery level, (e)xit')
 	while True:
-		cmd = input('C>')
-		if cmd == 's':
+		run_cmd=input('C>')
+		if run_cmd == 's':
 			step_forward(robot)
-		if cmd == 'r':
+		if run_cmd == 'r':
 			move_right(robot, move_l)
-		if cmd == 'l':
+		if run_cmd == 'l':
 			move_left(robot, move_l)
-		if cmd == 'c':
+		if run_cmd == 'c':
 			capture(robot)
-		if cmd == 'b':
+		if run_cmd == 'b':
 			battery_level(robot)
-		if cmd == 'e':
+		if run_cmd == 'n':
+			time.sleep(1)
+		if run_cmd == 'e':
 			cv2.destroyAllWindows()
 			print('Bye.')
-			break		
+			break
 
 
-if __name__ == '__main__':
+def cozmo_step_forward(robot: cozmo.robot.Robot):
+	""" Follows line forever
+	"""
+	log.info('Entering Cozmo step_forward...')
+	robot.set_head_light(True)
+	robot.camera.image_stream_enabled = True
+	robot.set_lift_height(1.0).wait_for_completed()
+	while True:
+		step_forward(robot)
+
+
+def cozmo_battery_level(robot: cozmo.robot.Robot):
+	""" Output battery level
+	"""
+	log.info('Entering Cozmo battery_level...')
+	battery_level(robot)
+
+
+def main(argv):
 	# Set-up logging
 	formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)-8s %(message)s')
 	handler = logging.StreamHandler()
 	handler.setLevel(logging.INFO)
 	handler.setFormatter(formatter)
-	log = logging.getLogger('ok.linefollow')
 	log.setLevel(logging.INFO)
 	log.addHandler(handler)
-	# Start Cozmo program
-	cozmo.run_program(cozmo_program)
+	# Eval command line
+	usecase='cli'
+	try:
+		opts, args = getopt.getopt(argv,'hu:',['usecase='])
+	except getopt.GetoptError:
+		print('line_follow.py -u <usecase>')
+		sys.exit(2)
+	for opt, arg in opts:
+		if opt == '-h':
+			print('line_follow.py -u <usecase>')
+			sys.exit()
+		elif opt in ("-u", "--usecase"):
+			usecase=arg
+	log.info('Executing use case '+usecase)
+	if usecase=='cli':
+		cozmo.run_program(cozmo_cli)
+	elif usecase=='step_forward':
+		cozmo.run_program(cozmo_step_forward)
+	elif usecase=='battery_level':
+		cozmo.run_program(cozmo_battery_level)
+
+if __name__ == '__main__':
+	main(sys.argv[1:])
