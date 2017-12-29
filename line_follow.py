@@ -11,6 +11,7 @@ import time
 from cozmo.util import degrees, distance_mm, speed_mmps
 from matplotlib import pyplot as plt
 
+
 """ A simple line follow logic, which guides Cozmo along a line.
 	For best results, use a white paper and a line that is 5-10mm
 	thick. Make sure that no other marks are on the paper, as it is
@@ -18,13 +19,11 @@ from matplotlib import pyplot as plt
 	used for line position analysis.
 
 	Potential improvements:
-	(1) Crive continously and only stop for correction of
-		direction
-	(2) In case of multiple contours, select best contour 
+	(1) Master sharp turns
+	(2) Master crossings
+	(3) In case of multiple contours, select best contour 
 	    (heuristics could be: in the middle, nearest the last
 		contour, ...)
-	(3) Master sharp turns
-	(4) Master crossings
 
 	Further work: Would be interesting to replace this complex
 	logic by just a neural network as done here:
@@ -43,12 +42,17 @@ gap_m = 60
 gap_l = 120
 turn_s = 5
 turn_m = 15
-turn_l = 45
+turn_l = 30
 move_s = 5
 move_m = 10
 move_l = 15
 cam_center = 160
 step_l = 20
+speed = 20
+
+# Modes
+MODE_STEP=1
+MODE_DRIVE=2
 
 # Show/hide images
 show_img=True
@@ -108,14 +112,35 @@ def draw_grid(img):
 	center = int(round(width/2))
 	ret_img = cv2.line(img, (center, 0), (center,height), (255,255,0), 1)
 	return ret_img
+
+
+def drive(robot: cozmo.robot.Robot):
+	""" Start driving
+	"""
+	log.info('Drive...')
+	robot.drive_wheel_motors(speed, speed)
 	
+
+def drive_left(robot: cozmo.robot.Robot):
+	""" Drive to left
+	"""
+	log.info('Drive left...')
+	robot.drive_wheel_motors(speed-15, speed)
+
+
+def drive_right(robot: cozmo.robot.Robot):
+	""" Drive to right
+	"""
+	log.info('Drive right...')
+	robot.drive_wheel_motors(speed, speed-20)
+
 
 def move_right(robot: cozmo.robot.Robot, move):
 	""" Moves the robot to the right, in case the path is too far on the right
 	"""
 	log.info('Move right...')
 	robot.turn_in_place(degrees(-45)).wait_for_completed()
-	robot.drive_straight(distance_mm(move), speed_mmps(5)).wait_for_completed()
+	robot.drive_straight(distance_mm(move), speed_mmps(speed)).wait_for_completed()
 	robot.turn_in_place(degrees(45)).wait_for_completed()
 
 
@@ -124,11 +149,24 @@ def move_left(robot: cozmo.robot.Robot, move):
 	"""
 	log.info('Move left...')
 	robot.turn_in_place(degrees(45)).wait_for_completed()
-	robot.drive_straight(distance_mm(move), speed_mmps(5)).wait_for_completed()
+	robot.drive_straight(distance_mm(move), speed_mmps(speed)).wait_for_completed()
 	robot.turn_in_place(degrees(-45)).wait_for_completed()
 
 
-def correct_position(robot: cozmo.robot.Robot, cur_center):
+def correct_turn(robot: cozmo.robot.Robot, turn, mode):
+	""" Performs the turn for the correction. In case of
+		'drive' mode, wheels are stopped and started again,
+		in case of 'step' mode, only turn is performed
+	"""
+	log.info('Turn for correction...')
+	if mode==MODE_DRIVE:
+		robot.stop_all_motors()
+	robot.turn_in_place(degrees(turn)).wait_for_completed()
+	if mode==MODE_DRIVE:
+		robot.drive_wheel_motors(speed, speed)
+		
+	
+def correct_position(robot: cozmo.robot.Robot, cur_center, mode):
 	""" Corrects the position of the robot. Currently, the following corrections
 		are implemented (see top of file for constant definitions):
 		1) Current path center is >gap_s / >gap_m / >gap_l pixels to the right, 
@@ -142,27 +180,27 @@ def correct_position(robot: cozmo.robot.Robot, cur_center):
 	log.info('Absolute gap    : '+str(gap_abs))
 	if gap_abs < -gap_l:
 		log.info('Current center is gap_l to right, needs right turn_l')
-		robot.turn_in_place(degrees(-turn_l)).wait_for_completed()
+		correct_turn(robot, -turn_l, mode)
 		return 10
 	elif gap_abs < -gap_m:
 		log.info('Current center is gap_m to right, needs right turn_m')
-		robot.turn_in_place(degrees(-turn_m)).wait_for_completed()
+		correct_turn(robot, -turn_m, mode)
 		return 20
 	elif gap_abs < -gap_s:
 		log.info('Current center is gap_s to right, needs right turn_s')
-		robot.turn_in_place(degrees(-turn_s)).wait_for_completed()
+		correct_turn(robot, -turn_s, mode)
 		return 30
 	elif gap_abs > gap_l:
 		log.info('Current center is gap_l to left, needs left turn_l')
-		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
+		correct_turn(robot, turn_l, mode)
 		return 10
 	elif gap_abs > gap_m:
 		log.info('Current center is gap_m to left, needs left turn_m')
-		robot.turn_in_place(degrees(turn_m)).wait_for_completed()
+		correct_turn(robot, turn_m, mode)
 		return 20
 	elif gap_abs > gap_s:
 		log.info('Current center is gap_s to left, needs left turn_s')
-		robot.turn_in_place(degrees(turn_s)).wait_for_completed()
+		correct_turn(robot, turn_s, mode)
 		return 30
 	else:
 		return 40
@@ -176,7 +214,6 @@ def step_forward(robot: cozmo.robot.Robot):
 	"""
 	log.info('Stepping forward...')
 	# Take snapshot and store path rect
-	log.info('BEGIN_CALC')
 	robot.set_head_angle(cozmo.robot.MIN_HEAD_ANGLE).wait_for_completed()
 	raw_img = np.array(robot.world.latest_image.raw_image)
 	cur_x, cur_y, cur_w, cur_h = get_path_rect(raw_img)
@@ -186,10 +223,31 @@ def step_forward(robot: cozmo.robot.Robot):
 	if show_img:
 		cv2.imshow('step_forward', pth_img)
 	# Trigger correction
-	log.info('END_CALC')
-	proposed_step = correct_position(robot, get_path_center(cur_x, cur_w))
+	proposed_step = correct_position(robot, get_path_center(cur_x, cur_w), MODE_STEP)
 	log.info('Moving forward '+str(proposed_step)+'mm')
-	robot.drive_straight(distance_mm(proposed_step), speed_mmps(20), False).wait_for_completed()
+	robot.drive_straight(distance_mm(proposed_step), speed_mmps(speed), False).wait_for_completed()
+
+
+def drive_forward(robot: cozmo.robot.Robot):
+	""" Implements the main forward step. The robot takes a step forward and then
+		compares the bounding rects of the contour of the path and adjusts direction
+		accordingly. First implementation works with small / medium / large adjustments
+		only.
+	"""
+	log.info('Stepping forward...')
+	# Take snapshot and store path rect
+	robot.set_head_angle(cozmo.robot.MIN_HEAD_ANGLE).wait_for_completed()
+	raw_img = np.array(robot.world.latest_image.raw_image)
+	cur_x, cur_y, cur_w, cur_h = get_path_rect(raw_img)
+	# Visualise path rects in second image
+	pth_img = draw_grid(raw_img)
+	pth_img = draw_path_rect(pth_img, cur_x, cur_y+2, cur_w, cur_h, (0,255,0))
+	if show_img:
+		cv2.imshow('step_forward', pth_img)
+	# Trigger correction
+	proposed_step = correct_position(robot, get_path_center(cur_x, cur_w), MODE_DRIVE)
+	log.info('Driving on for '+str(proposed_step/speed)+' seconds')
+	time.sleep(proposed_step/speed)
 
 
 def capture(robot: cozmo.robot.Robot):
@@ -218,6 +276,7 @@ def cozmo_cli(robot: cozmo.robot.Robot):
 	""" Main loop implementing simplistic CLI
 	"""
 	log.info('Entering Cozmo program')
+	robot.stop_all_motors()
 	robot.set_head_light(True)
 	robot.camera.image_stream_enabled = True
 	robot.set_lift_height(1.0).wait_for_completed()
@@ -225,10 +284,12 @@ def cozmo_cli(robot: cozmo.robot.Robot):
 		run_cmd=input('C>')
 		if run_cmd == 's':
 			step_forward(robot)
+		if run_cmd == 'd':
+			drive(robot)
 		if run_cmd == 'r':
-			move_right(robot, move_l)
+			drive_right(robot)
 		if run_cmd == 'l':
-			move_left(robot, move_l)
+			drive_left(robot)
 		if run_cmd == 'c':
 			capture(robot)
 		if run_cmd == 'b':
@@ -236,20 +297,37 @@ def cozmo_cli(robot: cozmo.robot.Robot):
 		if run_cmd == 'n':
 			time.sleep(1)
 		if run_cmd == 'e':
+			robot.stop_all_motors()
 			cv2.destroyAllWindows()
 			print('Bye.')
 			break
 
 
 def cozmo_step_forward(robot: cozmo.robot.Robot):
-	""" Follows line forever
+	""" Follows line forever (step-by-step)
 	"""
+	global show_img
 	log.info('Entering Cozmo step_forward...')
+	show_img=False
 	robot.set_head_light(True)
 	robot.camera.image_stream_enabled = True
 	robot.set_lift_height(1.0).wait_for_completed()
 	while True:
 		step_forward(robot)
+
+
+def cozmo_drive_forward(robot: cozmo.robot.Robot):
+	""" Follows line forever (continuously)
+	"""
+	global show_img
+	log.info('Entering Cozmo drive_forward...')
+	show_img=False
+	robot.set_head_light(True)
+	robot.camera.image_stream_enabled = True
+	robot.set_lift_height(1.0).wait_for_completed()
+	robot.drive_wheel_motors(speed, speed)
+	while True:
+		drive_forward(robot)
 
 
 def cozmo_battery_level(robot: cozmo.robot.Robot):
@@ -285,6 +363,8 @@ def main(argv):
 		cozmo.run_program(cozmo_cli)
 	elif usecase=='step_forward':
 		cozmo.run_program(cozmo_step_forward)
+	elif usecase=='drive_forward':		
+		cozmo.run_program(cozmo_drive_forward)
 	elif usecase=='battery_level':
 		cozmo.run_program(cozmo_battery_level)
 
