@@ -1,4 +1,5 @@
 cozmo
-cv2
+Pillow
 matplotlib
 numpy
+opencv-python
